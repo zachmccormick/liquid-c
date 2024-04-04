@@ -122,6 +122,7 @@ static tag_markup_t internal_block_body_parse(block_body_t *body, parse_context_
     token_t token;
     tag_markup_t unknown_tag = { Qnil, Qnil };
     int render_score_increment = 0;
+    VALUE nodelist = rb_ary_new();
 
     while (true) {
         int token_start_line_number = tokenizer->line_number;
@@ -166,6 +167,8 @@ static tag_markup_t internal_block_body_parse(block_body_t *body, parse_context_
 
                 vm_assembler_add_write_raw(body->as.intermediate.code, token_start, token_end - token_start);
                 render_score_increment += 1;
+                VALUE string = rb_enc_str_new(token_start, token_end - token_start, utf8_encoding);
+                rb_ary_push(nodelist, string);
 
                 if (body->as.intermediate.blank) {
                     const char *end = token.str_full + token.len_full;
@@ -186,6 +189,7 @@ static tag_markup_t internal_block_body_parse(block_body_t *body, parse_context_
                 };
                 internal_variable_compile(&parse_args, token_start_line_number);
                 render_score_increment += 1;
+                // ZACH add to nodelist
                 body->as.intermediate.blank = false;
                 break;
             }
@@ -222,6 +226,7 @@ static tag_markup_t internal_block_body_parse(block_body_t *body, parse_context_
                     *tokenizer = saved_tokenizer;
                     if (unknown_tag.name != Qnil) {
                         rb_funcall(cLiquidBlockBody, intern_unknown_tag_in_liquid_tag, 2, unknown_tag.name, parse_context->ruby_obj);
+                        printf("LOOP BREAK 1\n");
                         goto loop_break;
                     }
                     break;
@@ -229,17 +234,23 @@ static tag_markup_t internal_block_body_parse(block_body_t *body, parse_context_
 
                 VALUE tag_name = rb_enc_str_new(name_start, name_end - name_start, utf8_encoding);
                 VALUE tag_class = rb_funcall(tag_registry, intern_square_brackets, 1, tag_name);
+                printf("Parsing tag: '%.*s'\n", name_len, name_start);
 
                 const char *markup_start = read_while(name_end, end, rb_isspace);
                 VALUE markup = rb_enc_str_new(markup_start, end - markup_start, utf8_encoding);
 
                 if (tag_class == Qnil) {
                     unknown_tag = (tag_markup_t) { tag_name, markup };
+                    printf("LOOP BREAK 2\n");
                     goto loop_break;
                 }
 
+                VALUE classname = rb_funcall(tag_class, rb_intern("to_s"), 0);
+                printf("Ruby Classname: %s\n", StringValueCStr(classname));
+
                 VALUE new_tag = rb_funcall(tag_class, intern_parse, 4,
                         tag_name, markup, parse_context->tokenizer_obj, parse_context->ruby_obj);
+                printf("Finished calling parse on %s\n", StringValueCStr(classname));
 
                 if (body->as.intermediate.blank && !RTEST(rb_funcall(new_tag, intern_is_blank, 0)))
                     body->as.intermediate.blank = false;
@@ -252,10 +263,12 @@ static tag_markup_t internal_block_body_parse(block_body_t *body, parse_context_
                     tokenizer->raw_tag_body = NULL;
                     tokenizer->raw_tag_body_len = 0;
                 } else {
+                    printf("WRITING NODE %.*s\n", name_len, name_start);
                     vm_assembler_add_write_node(body->as.intermediate.code, new_tag);
                 }
 
                 render_score_increment += 1;
+                rb_ary_push(nodelist, new_tag);
                 break;
             }
             case TOKEN_BLANK_LIQUID_TAG_LINE:
@@ -264,6 +277,8 @@ static tag_markup_t internal_block_body_parse(block_body_t *body, parse_context_
     }
 loop_break:
     body->as.intermediate.render_score += render_score_increment;
+    rb_ary_freeze(nodelist);
+    body->as.compiled.nodelist = nodelist;
     return unknown_tag;
 }
 
@@ -323,7 +338,7 @@ static VALUE block_body_freeze(VALUE self)
     uint32_t render_score = body->as.intermediate.render_score;
     vm_assembler_t *code = body->as.intermediate.code;
     body->as.compiled.document_body_entry = document_body_write_block_body(document_body, blank, render_score, code);
-    body->as.compiled.nodelist = Qundef;
+//    body->as.compiled.nodelist = Qundef;
     body->compiled = true;
     vm_assembler_pool_recycle_assembler(assembler_pool, assembler);
 
@@ -411,7 +426,7 @@ static VALUE block_body_nodelist(VALUE self)
 
     if (body->as.compiled.nodelist != Qundef)
         return body->as.compiled.nodelist;
-
+printf("NODELIST\n");
     VALUE nodelist = rb_ary_new_capa(body_header->render_score);
 
     const VALUE *constants = &entry->body->constants;

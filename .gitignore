@@ -11,3 +11,6 @@ instruments*.trace
 *.cpu
 *.object
 *.dSYM
+
+.idea/
+.ruby-version
